@@ -63,21 +63,36 @@ def webhook():
         instrument = data["instrument"]          # e.g. "EUR_USD"
         action = data["action"].lower()           # "buy" or "sell"
         units = int(data.get("units", 1000))      # size, e.g. 1000
-        stop_loss_price = str(data["stop_loss"])
-        take_profit_price = str(data["take_profit"])
     except (KeyError, ValueError, TypeError) as e:
         log.error(f"Malformed alert payload: {data} -- {e}")
         return jsonify({"error": f"missing or bad field: {e}"}), 400
 
+    # Only buy orders need SL/TP -- sell/close orders don't carry them
+    stop_loss_price = None
+    take_profit_price = None
+    if action == "buy":
+        try:
+            stop_loss_price = str(data["stop_loss"])
+            take_profit_price = str(data["take_profit"])
+        except (KeyError, ValueError, TypeError) as e:
+            log.error(f"Malformed buy alert payload: {data} -- {e}")
+            return jsonify({"error": f"missing or bad field: {e}"}), 400
+
     # OANDA uses positive units for buy, negative units for sell/close-and-short
     order_units = units if action == "buy" else -units
 
-    mkt_order = MarketOrderRequest(
-        instrument=instrument,
-        units=order_units,
-        takeProfitOnFill=TakeProfitDetails(price=take_profit_price).data,
-        stopLossOnFill=StopLossDetails(price=stop_loss_price).data,
-    )
+    if action == "buy":
+        mkt_order = MarketOrderRequest(
+            instrument=instrument,
+            units=order_units,
+            takeProfitOnFill=TakeProfitDetails(price=take_profit_price).data,
+            stopLossOnFill=StopLossDetails(price=stop_loss_price).data,
+        )
+    else:
+        mkt_order = MarketOrderRequest(
+            instrument=instrument,
+            units=order_units,
+        )
 
     try:
         r = orders.OrderCreate(OANDA_ACCOUNT_ID, data=mkt_order.data)
@@ -121,6 +136,7 @@ if __name__ == "__main__":
 #      - Start Command: gunicorn oanda_webhook_bridge:app
 #
 # 4) YOUR TRADINGVIEW ALERT MESSAGE SHOULD SEND JSON LIKE:
+#      Buy (needs stop_loss and take_profit):
 #      {
 #        "secret": "pick-any-password-you-want",
 #        "instrument": "EUR_USD",
@@ -128,6 +144,14 @@ if __name__ == "__main__":
 #        "units": 1000,
 #        "stop_loss": 1.0700,
 #        "take_profit": 1.1000
+#      }
+#
+#      Sell/close (no stop_loss or take_profit needed):
+#      {
+#        "secret": "pick-any-password-you-want",
+#        "instrument": "EUR_USD",
+#        "action": "sell",
+#        "units": 1000
 #      }
 #
 # Note: for forex, you'd need a SEPARATE Pine Script strategy built for
